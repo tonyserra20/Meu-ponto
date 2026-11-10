@@ -305,7 +305,7 @@ function defaultCfg(today){return {
   versions:[{from:'2000-01-01',week:clone(DEFAULT_WEEK)}],
   remind:{on:true,after:5}
 }}
-function hm2m(s){return (+s.slice(0,2))*60+(+s.slice(3,5))}
+function hm2m(s){s=/^\d\d:\d\d/.test(s)?s:'00:00';return (+s.slice(0,2))*60+(+s.slice(3,5))}
 function d2u(iso){const [y,m,d]=iso.split('-').map(Number);return Date.UTC(y,m-1,d)}
 function u2d(ms){return new Date(ms).toISOString().slice(0,10)}
 function addDays(iso,n){return u2d(d2u(iso)+n*864e5)}
@@ -371,7 +371,9 @@ function computeDay(date,ctx){
   const active=ctx.active||now.date;
   const missing=[];
   const abs=absOf(rec);
-  const res={date,sched,ev,expected,worked:0,delta:0,extra:0,neg:0,comp:0,late:0,early:0,status:'none',label:'',missing,counted:false,inProgress:false,abs,warn:'',any,rec};
+  const fixed=cfg.fixedLunch!==false&&!!sched&&!!sched.ls&&!!sched.lr&&!zero&&!rec.noLunch&&!p.ls&&!p.lr;
+  const lunchCut=(a,b)=>{const s=schedAbs(sched);return Math.max(0,Math.min(b,s.lr)-Math.max(a,s.ls))};
+  const res={fixedLunch:fixed,date,sched,ev,expected,worked:0,delta:0,extra:0,neg:0,comp:0,late:0,early:0,status:'none',label:'',missing,counted:false,inProgress:false,abs,warn:'',any,rec};
   const nextDay={};
   if(any){
     const first=Math.min(...Object.values(abs));
@@ -385,16 +387,16 @@ function computeDay(date,ctx){
     if(!p.x)missing.push('x');
     if(p.ls&&!p.lr)missing.push('lr');
     if(p.lr&&!p.ls)missing.push('ls');
-    if(!p.ls&&!p.lr&&sched&&sched.ls&&!zero&&!rec.noLunch&&(p.e||p.x)){missing.push('ls');missing.push('lr')}
+    if(!fixed&&!p.ls&&!p.lr&&sched&&sched.ls&&!zero&&!rec.noLunch&&(p.e||p.x)){missing.push('ls');missing.push('lr')}
     let w=0;
     if(p.e&&p.ls)w+=abs.ls-abs.e;
     if(p.lr&&p.x)w+=abs.x-abs.lr;
-    if(p.e&&p.x&&!p.ls&&!p.lr)w+=abs.x-abs.e;
+    if(p.e&&p.x&&!p.ls&&!p.lr)w+=abs.x-abs.e-(fixed?lunchCut(abs.e,abs.x):0);
     const inProg=(date===now.date||date===active)&&!p.x;
     if(inProg&&!future){
       res.inProgress=true;
       const nowAbs=now.min+DAY*Math.max(0,diffDays(date,now.date));
-      if(p.e&&!p.ls&&!p.lr)w+=Math.max(0,nowAbs-abs.e);
+      if(p.e&&!p.ls&&!p.lr)w+=Math.max(0,nowAbs-abs.e-(fixed?lunchCut(abs.e,nowAbs):0));
       else if(p.lr)w+=Math.max(0,nowAbs-abs.lr);
     }
     res.worked=w;
@@ -608,6 +610,9 @@ function startSession(u){
   Store.ready=true;cacheWrite();
   $('#login').hidden=true;$('#app').hidden=false;
   drawWho();render();
+  Store.user.email=u.email;
+  if(isGestor()&&!NAV.some(n=>n[0]==='equipe')){NAV.push(['equipe','Equipe','team']);drawNav()}
+  fbDb.doc('usuarios/'+u.email).set({nome:Store.user.name,ultimoAcesso:isoNow()},{merge:true}).catch(()=>{});
   Store.col=fbDb.collection('usuarios/'+u.email+'/ponto');
   Store.timer=setTimeout(()=>{if(!Store.definitive){syncBadge();toast('Sem resposta do servidor. Você pode registrar normalmente; os dados serão enviados depois.')}},10000);
   Store.unsub=Store.col.onSnapshot({includeMetadataChanges:true},applySnapshot,err=>{goLocal();render(true)});
@@ -649,6 +654,9 @@ async function logout(){
   clearTimeout(Store.timer);
   if(!n){try{localStorage.removeItem(cacheKey())}catch(e){}}
   Store.col=null;Store.ready=false;Store.docs={};Store.pending={};version++;pendingName='';
+  $('#toast').hidden=true;
+  Object.assign(Team,{loaded:false,loading:false,people:[],error:'',sel:null});
+  {const i=NAV.findIndex(n=>n[0]==='equipe');if(i>=0)NAV.splice(i,1)}
   await fbAuth.signOut();
 }
 function drawWho(){
@@ -727,7 +735,8 @@ const ICONS={
   pdf:'M12 4v11M7.5 11l4.5 4.5 4.5-4.5M5 20h14',
   bell:'M6 16V11a6 6 0 1 1 12 0v5l2 2H4l2-2ZM10 21h4',
   check:'M5 13l4 4L19 7',
-  trash:'M4 7h16M9 7V4h6v3M6.5 7l1 14h9l1-14'
+  trash:'M4 7h16M9 7V4h6v3M6.5 7l1 14h9l1-14',
+  team:'M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 20v-2a4 4 0 0 0-3-3.9M16 2.1a4 4 0 0 1 0 7.8'
 };
 function ic(n){return '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="'+ICONS[n]+'"/></svg>'}
 const NAV=[['inicio','Início','home'],['calendario','Calendário','cal'],['banco','Banco de horas','bank'],['relatorios','Relatórios','file'],['ocorrencias','Ocorrências','flag'],['ajustes','Jornada e ajustes','gear'],['historico','Histórico','hist']];
@@ -754,14 +763,14 @@ function ask(title,msg,okLabel,danger){
 const S={view:'inicio',ym:null,sel:null,rep:{type:'mes'},bank:{k:'mes'},histYm:'',evType:'holiday',evFrom:''};
 function route(){
   const h=location.hash.slice(1);
-  S.view=[...NAV.map(n=>n[0]),'mais'].includes(h)?h:'inicio';
+  S.view=[...NAV.map(n=>n[0]),'mais','equipe'].includes(h)?h:'inicio';
   S.dirty=false;
   render();
 }
 window.addEventListener('hashchange',route);
 function drawNav(){
   const cur=S.view;
-  const inMais=['ocorrencias','ajustes','historico','mais'].includes(cur);
+  const inMais=['ocorrencias','ajustes','historico','mais','equipe'].includes(cur);
   $('#nav').innerHTML=NAV.map(n=>'<a href="#'+n[0]+'" '+(cur===n[0]?'aria-current="page"':'')+'>'+ic(n[2])+n[1]+'</a>').join('');
   $('#bottom').innerHTML=BOTTOM.map(n=>'<a href="#'+n[0]+'" '+((cur===n[0]||(n[0]==='mais'&&inMais))?'aria-current="page"':'')+'>'+ic(n[2])+n[1]+'</a>').join('');
 }
@@ -775,7 +784,7 @@ function render(soft){
   drawNav();
   const v=$('#view');
   if(!Store.ready){v.innerHTML='<div class="empty">Abrindo o seu painel…</div>';return}
-  const fn={inicio:vHome,calendario:vCal,banco:vBank,relatorios:vRep,ocorrencias:vEv,ajustes:vSet,historico:vHist,mais:vMore}[S.view];
+  const fn={inicio:vHome,calendario:vCal,banco:vBank,relatorios:vRep,ocorrencias:vEv,ajustes:vSet,historico:vHist,mais:vMore,equipe:vTeam}[S.view];
   v.innerHTML=fn();
   if(S.view==='banco')drawBankChart();
   if(S.view==='ajustes')updateWeekTotal();
@@ -787,7 +796,7 @@ function nextKey(date,c){
   const rec=getDay(date)||{},p=punchesOf(rec);
   if(p.x)return null;
   const sched=c.sched,zero=c.ev&&ZERO_EXPECTED.includes(c.ev.type);
-  const useLunch=sched&&sched.ls&&!zero&&!rec.noLunch;
+  const useLunch=sched&&sched.ls&&!zero&&!rec.noLunch&&cfg().fixedLunch===false;
   const seq=(useLunch||p.ls)?KEYS:['e','x'];
   return seq.find(k=>!p[k]);
 }
@@ -795,6 +804,10 @@ function dayStatusText(c){
   const p=punchesOf(c.rec);
   if(p.x)return ['Expediente encerrado',false];
   if(p.ls&&!p.lr)return ['Em horário de almoço',false];
+  if(c.fixedLunch&&p.e){
+    const s=schedAbs(c.sched),x=ctx(),nm=x.now.min+DAY*diffDays(c.date,x.now.date);
+    if(nm>=s.ls&&nm<s.lr)return ['Em horário de almoço',false];
+  }
   if(p.e||p.lr)return ['Em expediente',true];
   if(c.ev)return [EVENT_SHORT[c.ev.type]+(c.ev.note?': '+c.ev.note:''),false];
   if(!c.sched)return ['Folga',false];
@@ -826,7 +839,9 @@ function vHome(){
     return '<div class="c'+(r.date===n.date?' today':'')+'" data-tip="'+esc(tip)+'" tabindex="0">'+(r.expected?'<span class="g" style="bottom:'+g+'%"></span>':'')+'<div class="b" style="height:'+h+'%"></div></div>';
   }).join('');
   const labs=wk.map(r=>r.date===n.date?'<b>'+WDS[dow(r.date)]+'</b>':'<span>'+WDS[dow(r.date)]+'</span>').join('');
-  const stamps=KEYS.map(key=>{
+  const lunchFixed=cfg().fixedLunch!==false&&c.sched&&c.sched.ls&&!p.ls&&!p.lr;
+  const showKeys=lunchFixed?['e','x']:KEYS;
+  const stamps=showKeys.map(key=>{
     const v=p[key],skip=c.sched&&!c.sched[key]&&!v;
     const cl=v?'done':(key===k?'next':(skip?'skip':''));
     const prev=c.sched&&c.sched[key]?'prevista '+c.sched[key]:'não prevista';
@@ -850,7 +865,8 @@ function vHome(){
       ${canNoLunch?'<div><button class="linkbtn" data-act="no-lunch" data-date="'+date+'">Hoje não fiz almoço</button></div>':''}
     </section>
     <section class="stack" aria-label="Cartão de ponto">
-      <div class="stamps">${stamps}</div>
+      <div class="stamps" style="grid-template-columns:repeat(${showKeys.length},minmax(0,1fr))">${stamps}</div>
+      ${lunchFixed?'<p class="small" style="color:var(--navy);font-weight:500">'+(c.rec.noLunch?'Hoje sem intervalo de almoço.':'Almoço fixo das '+esc(c.sched.ls)+' às '+esc(c.sched.lr)+', descontado automaticamente.')+'</p>':''}
       <p class="small muted">Toque em um campo vazio para registrar agora. Toque em um horário preenchido para corrigir.</p>
     </section>
   </div>
@@ -946,6 +962,7 @@ function dayPanel(date){
   return `<div class="row between"><div><h2 class="cap">${WD[dow(date)]}</h2><span class="muted small">${longDate(date)}</span></div>${c.label?'<span class="pill '+pillCls+'">'+esc(c.label)+'</span>':''}</div>
   <div class="ptimes">${times}</div>
   ${miss}
+  ${c.fixedLunch&&c.any?'<p class="small muted">Almoço fixo ('+esc(c.sched.ls)+' às '+esc(c.sched.lr)+') descontado automaticamente.</p>':''}
   ${c.warn?'<p class="small" style="color:var(--neg);font-weight:500">'+esc(c.warn)+'</p>':''}
   <dl class="dl">
     <dt>Total trabalhado</dt><dd class="sum">${fmtDur(c.worked)}</dd>
@@ -1190,9 +1207,9 @@ function showCopy(text){
 }
 function fileStamp(R){return R.from===R.to?R.from:R.from+'_a_'+R.to}
 function pdfSafe(s){return String(s).replace(/−/g,'-').replace(/–/g,'-').replace(/→/g,'>').replace(/·/g,'|').replace(/[^\x20-\x7E -ÿ]/g,'?')}
-async function exportPDF(){
+async function exportPDF(R,pName){
   if(!window.PDFLib){toast('O gerador de PDF ainda não carregou. Verifique a internet e tente de novo.');return}
-  const R=repRows();
+  R=R||repRows();if(pName===undefined)pName=Store.user.name;
   if(!R.rows.length){toast('Período inválido. Confira as datas.');return}
   const {PDFDocument,StandardFonts,rgb}=window.PDFLib;
   const pdf=await PDFDocument.create();
@@ -1214,7 +1231,7 @@ async function exportPDF(){
   function header(){
     page=pdf.addPage([W,H]);pageNo++;y=H-M;
     page.drawText('Meu Ponto',{x:M,y:y-14,size:18,font:bold,color:navy});
-    txt(page,(Store.user.name?Store.user.name+' | ':'')+'Relatório de '+brDate(R.from)+' a '+brDate(R.to),M,y-30,{size:10,color:mut});
+    txt(page,(pName?pName+' | ':'')+'Relatório de '+brDate(R.from)+' a '+brDate(R.to),M,y-30,{size:10,color:mut});
     const g='Gerado em '+brDateTime(isoNow());
     txt(page,g,W-M-font.widthOfTextAtSize(pdfSafe(g),9),y-14,{color:mut});
     y-=52;
@@ -1237,7 +1254,7 @@ async function exportPDF(){
   footer();
   function footer(){txt(page,'Página '+pageNo,W-M-40,16,{size:8,color:mut});txt(page,'Dias pendentes não entram no saldo. (+1) indica horário no dia seguinte.',M,16,{size:8,color:mut})}
   const bytes=await pdf.save();
-  await saveFile('meu-ponto_'+fileStamp(R)+'.pdf',bytes);
+  await saveFile('meu-ponto_'+(R.slug?R.slug+'_':'')+fileStamp(R)+'.pdf',bytes);
 }
 
 /* Excel: gera o .xlsx diretamente (ZIP sem compressão), sem depender de internet */
@@ -1260,14 +1277,15 @@ function zipStore(files){
   let p=0;for(const a of all){out.set(a,p);p+=a.length}
   return out;
 }
-function buildXlsx(R){
+function buildXlsx(R,pName,customSheet){
+  if(pName===undefined)pName=Store.user.name;
   const xe=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const col=i=>String.fromCharCode(65+i);
   const heads=['Data','Dia','Entrada','Saída almoço','Retorno almoço','Saída','Total trabalhado','Jornada prevista','Horas extras','Horas negativas','Saldo diário','Saldo acumulado','Observação'];
   let rowsXml='';
   const str=(r,c,v,s)=>'<c r="'+col(c)+r+'" t="inlineStr" s="'+(s||0)+'"><is><t xml:space="preserve">'+xe(v)+'</t></is></c>';
   const num=(r,c,v,s)=>'<c r="'+col(c)+r+'" s="'+s+'"><v>'+v+'</v></c>';
-  rowsXml+='<row r="1">'+str(1,0,'Meu Ponto: '+(Store.user.name?Store.user.name+', ':'')+'relatório de '+brDate(R.from)+' a '+brDate(R.to),3)+'</row>';
+  rowsXml+='<row r="1">'+str(1,0,'Meu Ponto: '+(pName?pName+', ':'')+'relatório de '+brDate(R.from)+' a '+brDate(R.to),3)+'</row>';
   rowsXml+='<row r="3">'+heads.map((h,i)=>str(3,i,h,1)).join('')+'</row>';
   let r=4;
   const ser=d=>diffDays('1899-12-30',d);
@@ -1280,7 +1298,7 @@ function buildXlsx(R){
   const first=4,last=r-1;
   rowsXml+='<row r="'+r+'">'+str(r,0,'Total',6)+['G','H','I','J'].map((L,i)=>'<c r="'+L+r+'" s="4"><f>SUM('+L+first+':'+L+last+')</f><v>'+([R.t.worked,R.t.expected,R.t.extra,R.t.neg+R.t.comp][i]/1440)+'</v></c>').join('')+str(r,10,fmtSigned(R.t.net).replace('−','-'),6)+'</row>';
   const widths=[12,15,9,13,14,9,15,15,12,14,12,14,42];
-  const sheet='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>'+widths.map((w,i)=>'<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>').join('')+'</cols><sheetData>'+rowsXml+'</sheetData></worksheet>';
+  const sheet=customSheet||'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>'+widths.map((w,i)=>'<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>').join('')+'</cols><sheetData>'+rowsXml+'</sheetData></worksheet>';
   const styles='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="[h]:mm"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy"/></numFmts><fonts count="4"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="FF12294B"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF12294B"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="164" fontId="3" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
   return zipStore([
     ['[Content_Types].xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
@@ -1291,10 +1309,10 @@ function buildXlsx(R){
     ['xl/worksheets/sheet1.xml',sheet]
   ]);
 }
-async function exportXlsx(){
-  const R=repRows();
+async function exportXlsx(R,pName){
+  R=R||repRows();
   if(!R.rows.length){toast('Período inválido. Confira as datas.');return}
-  await saveFile('meu-ponto_'+fileStamp(R)+'.xlsx',buildXlsx(R));
+  await saveFile('meu-ponto_'+(R.slug?R.slug+'_':'')+fileStamp(R)+'.xlsx',buildXlsx(R,pName));
 }
 
 /* ---------- Ocorrências ---------- */
@@ -1373,6 +1391,7 @@ function vSet(){
       <div class="schedrow schedhead"><span>Dia</span><span>Entrada</span><span>Saída almoço</span><span>Retorno</span><span>Saída</span><span>Total</span></div>
       ${rows}
     </div>
+    <label class="ck"><input type="checkbox" id="w-fixed" ${c.fixedLunch!==false?'checked':''}>Almoço fixo: descontar o intervalo automaticamente, sem registrar saída e retorno do almoço</label>
     <div class="err" id="wErr" role="alert"></div>
     <div class="row" style="align-items:flex-end"><label class="f" style="flex:0 1 200px">Válida a partir de<input type="date" id="w-from" value="${esc(n)}"></label><button class="btn primary" data-act="save-week">Salvar jornada</button></div>
     <ul class="plist small">${vers}</ul>
@@ -1430,8 +1449,9 @@ function saveWeek(){
   const c=clone(cfg());
   const total=[0,1,2,3,4,5,6].reduce((s,d)=>s+schedMinutes(w[d]),0);
   c.versions=c.versions.filter(v=>v.from!==from);c.versions.push({from,week:w});
+  c.fixedLunch=$('#w-fixed').checked;
   put('cfg',c);
-  addLog({date:from,what:'Jornada alterada',field:'',before:'',after:fmtDur(total)+' por semana, a partir de '+brDate(from),reason:''});
+  addLog({date:from,what:'Jornada alterada',field:'',before:'',after:fmtDur(total)+' por semana, a partir de '+brDate(from)+(c.fixedLunch?', almoço fixo':', almoço registrado'),reason:''});
   S.dirty=false;render();toast('Jornada salva.');
 }
 function saveBank(){
@@ -1481,6 +1501,97 @@ function vMore(){
   <div class="stack">${NAV.slice(4).map(n=>'<a class="card row" style="text-decoration:none;color:var(--navy);font-weight:600;min-height:64px" href="#'+n[0]+'">'+ic(n[2])+n[1]+'</a>').join('')}<button class="btn" data-act="logout">Sair da conta</button></div>`;
 }
 
+/* ---------- Equipe (visão de gestor, somente leitura) ---------- */
+const GESTOR="tony.serra@meuponto.example.com";
+const Team={loaded:false,loading:false,people:[],error:'',sel:null,k:'mes',from:'',to:'',at:''};
+function isGestor(){return !!GESTOR&&Store.user.email===GESTOR}
+function idToName(id){return id.split('@')[0].split('.').map(s=>s.charAt(0).toUpperCase()+s.slice(1)).join(' ')}
+async function loadTeam(){
+  Team.loading=true;Team.error='';render();
+  try{
+    const us=await fbDb.collection('usuarios').get();
+    const list=await Promise.all(us.docs.map(async d=>{
+      const ps=await fbDb.collection('usuarios/'+d.id+'/ponto').get();
+      const docs={};ps.docs.forEach(x=>{docs[x.id]=x.data()});
+      return {id:d.id,nome:String(d.data().nome||idToName(d.id)),docs};
+    }));
+    Team.people=list.sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+    Team.loaded=true;Team.at=isoNow();
+  }catch(e){
+    Team.error=e&&e.code==='permission-denied'?'O Firebase não liberou o acesso. Confira se as novas regras foram publicadas.':'Não foi possível carregar a equipe. Verifique a internet e tente de novo.';
+  }
+  Team.loading=false;render();
+}
+function teamRange(){
+  const n=now().date;
+  if(Team.k==='ant'){const e=addDays(n.slice(0,7)+'-01',-1);return [e.slice(0,7)+'-01',e]}
+  if(Team.k==='per')return [Team.from||n.slice(0,7)+'-01',Team.to||n];
+  return [n.slice(0,7)+'-01',n];
+}
+/* Calcula cada pessoa separadamente, para que um registro inválido não derrube a tela. */
+function teamData(p){
+  const [from,to]=teamRange();
+  try{
+    const c=p.docs.cfg||defaultCfg(now().date),n=nowBR(c.tz||'America/Sao_Paulo'),getD=d=>p.docs['d_'+d]||null;
+    const x={cfg:c,events:(p.docs.events&&p.docs.events.list)||[],now:n,getDay:getD};
+    x.active=activeDate(getD,n);
+    const dates=Object.keys(p.docs).filter(k=>k.startsWith('d_')).map(k=>k.slice(2)).sort();
+    const led=buildLedger(x,dates),rows=[];
+    if(from<=to&&diffDays(from,to)<=1830)for(let d=from;d<=to;d=addDays(d,1))rows.push(led.map.get(d)||computeDay(d,x));
+    const today=computeDay(x.active,x);
+    return {from,to,rows,t:summarize(rows.filter(r=>r.date<=n.date),0),bal:led.balance,today,status:dayStatusText(today),pend:led.rows.filter(r=>r.status==='pend').length};
+  }catch(e){return {from,to,rows:[],t:summarize([],0),bal:0,err:true,pend:0,status:['Dados inválidos',false]}}
+}
+function vTeam(){
+  if(!isGestor())return '<div class="empty">Esta área é exclusiva do gestor.</div>';
+  if(!Team.loaded&&!Team.loading&&!Team.error){setTimeout(loadTeam,0);return '<div class="empty">Carregando a equipe…</div>'}
+  if(Team.loading&&!Team.loaded)return '<div class="empty">Carregando a equipe…</div>';
+  if(Team.sel){const p=Team.people.find(x=>x.id===Team.sel);if(p)return vTeamPerson(p);Team.sel=null}
+  const data=Team.people.map(p=>({p,d:teamData(p)}));
+  const working=data.filter(r=>r.d.status[1]).length,pend=data.reduce((s,r)=>s+r.d.pend,0),extra=data.reduce((s,r)=>s+r.d.t.extra,0);
+  const opts=[['mes','Este mês'],['ant','Mês passado'],['per','Período']],[from,to]=teamRange();
+  const rows=data.map(({p,d})=>'<tr><td><button class="linkbtn" style="color:var(--navy);font-weight:600;font-family:var(--f-body);text-align:left" data-act="team-open" data-id="'+esc(p.id)+'">'+esc(p.nome)+'</button></td><td class="txt">'+esc(d.status[0])+'</td><td>'+fmtDur(d.t.worked)+'</td><td>'+fmtDur(d.t.expected)+'</td><td>'+fmtDur(d.t.extra)+'</td><td>'+fmtDur(d.t.neg)+'</td><td>'+(d.pend?'<span class="pill pend">'+d.pend+'</span>':'0')+'</td><td class="'+signClass(d.t.net)+'">'+fmtSigned(d.t.net)+'</td><td class="'+signClass(d.bal)+'">'+fmtSigned(d.bal)+'</td></tr>').join('');
+  return `<div class="head"><h1>Equipe</h1><div class="row"><span class="small muted">${Team.at?'Atualizado às '+esc(brDateTime(Team.at).slice(11,16)):''}</span><button class="btn sm" data-act="team-reload" ${Team.loading?'disabled':''}>${Team.loading?'Atualizando…':'Atualizar'}</button></div></div>
+  ${Team.error?'<div class="alert"><span>'+ic('warn')+'<b>'+esc(Team.error)+'</b></span></div>':''}
+  <div class="seg" role="group" aria-label="Período">${opts.map(o=>'<button data-act="team-k" data-k="'+o[0]+'" aria-pressed="'+(Team.k===o[0])+'">'+o[1]+'</button>').join('')}</div>
+  ${Team.k==='per'?'<div class="formgrid" style="max-width:440px"><label class="f">De<input type="date" id="team-from" value="'+esc(from)+'" data-team="from"></label><label class="f">Até<input type="date" id="team-to" value="'+esc(to)+'" data-team="to"></label></div>':''}
+  <div class="grid4">
+    <div class="stat"><span class="k">Pessoas</span><span class="v">${data.length}</span></div>
+    <div class="stat"><span class="k">Em expediente agora</span><span class="v">${working}</span></div>
+    <div class="stat"><span class="k">Dias pendentes</span><span class="v">${pend}</span><span class="s">Desde o início</span></div>
+    <div class="stat"><span class="k">Horas extras</span><span class="v">${fmtDur(extra)}</span><span class="s">No período</span></div>
+  </div>
+  <section class="card" style="padding:6px 0"><div class="tablewrap">${rows?`<table><thead><tr><th>Nome</th><th class="txt">Hoje</th><th>Trabalhado</th><th>Prevista</th><th>Extras</th><th>Negativas</th><th>Pendentes</th><th>Saldo período</th><th>Banco atual</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">Cada pessoa aparece aqui depois de entrar no app.</div>'}</div></section>
+  <div class="row"><button class="btn" data-act="team-export" ${rows?'':'disabled'}>${ic('pdf')}Exportar equipe em Excel</button></div>`;
+}
+function vTeamPerson(p){
+  const d=teamData(p);
+  const body=d.rows.map(c=>'<tr><td>'+shortDate(c.date)+' '+WDS[dow(c.date)]+'</td>'+KEYS.map(k=>'<td>'+esc(repCell(c,k)||'–')+'</td>').join('')+'<td>'+fmtDur(c.worked)+'</td><td>'+fmtDur(repExp(c))+'</td><td>'+fmtDur(c.extra)+'</td><td>'+fmtDur(c.neg+c.comp)+'</td><td class="'+(c.counted?signClass(c.delta):'')+'">'+(c.counted?fmtSigned(c.delta):'–')+'</td><td class="'+(c.bal!==undefined?signClass(c.bal):'')+'">'+(c.bal!==undefined?fmtSigned(c.bal):'–')+'</td><td class="txt">'+esc(repObs(c))+'</td></tr>').join('');
+  return `<div class="head"><div><button class="linkbtn" data-act="team-back">Voltar para a equipe</button><h1>${esc(p.nome)}</h1><span class="small muted">${brDate(d.from)} a ${brDate(d.to)} · somente leitura</span></div><div class="row"><button class="btn sm" data-act="team-pdf">${ic('pdf')}PDF</button><button class="btn sm" data-act="team-xlsx">${ic('pdf')}Excel</button></div></div>
+  ${d.err?'<div class="alert"><span>'+ic('warn')+'<b>Os registros desta pessoa têm dados inválidos e não puderam ser calculados.</b></span></div>':''}
+  <div class="grid4">
+    <div class="stat"><span class="k">Trabalhado</span><span class="v">${fmtDur(d.t.worked)}</span></div>
+    <div class="stat"><span class="k">Horas extras</span><span class="v">${fmtDur(d.t.extra)}</span></div>
+    <div class="stat"><span class="k">Saldo do período</span><span class="v ${signClass(d.t.net)}">${fmtSigned(d.t.net)}</span></div>
+    <div class="stat"><span class="k">Banco atual</span><span class="v ${signClass(d.bal)}">${fmtSigned(d.bal)}</span></div>
+  </div>
+  <section class="card" style="padding:6px 0"><div class="tablewrap"><table><thead><tr><th>Data</th><th>Entrada</th><th>Saída almoço</th><th>Retorno</th><th>Saída</th><th>Total</th><th>Prevista</th><th>Extras</th><th>Negativas</th><th>Saldo dia</th><th>Acumulado</th><th class="txt">Observação</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
+}
+async function exportTeam(){
+  const [from,to]=teamRange(),xe=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const str=(ref,v,s)=>'<c r="'+ref+'" t="inlineStr" s="'+(s||0)+'"><is><t xml:space="preserve">'+xe(v)+'</t></is></c>';
+  const dur=(ref,m)=>'<c r="'+ref+'" s="2"><v>'+(m/1440)+'</v></c>';
+  const heads=['Nome','Trabalhado','Prevista','Horas extras','Negativas','Compensadas','Atrasos','Saídas antecipadas','Dias pendentes','Saldo do período','Banco atual'];
+  let xml='<row r="1">'+str('A1','Meu Ponto: equipe de '+brDate(from)+' a '+brDate(to),3)+'</row><row r="3">'+heads.map((h,i)=>str(String.fromCharCode(65+i)+'3',h,1)).join('')+'</row>';
+  Team.people.forEach((p,i)=>{
+    const r=4+i,d=teamData(p),t=d.t;
+    xml+='<row r="'+r+'">'+str('A'+r,p.nome)+dur('B'+r,t.worked)+dur('C'+r,t.expected)+dur('D'+r,t.extra)+dur('E'+r,t.neg)+dur('F'+r,t.comp)+dur('G'+r,t.late)+dur('H'+r,t.early)+'<c r="I'+r+'"><v>'+d.pend+'</v></c>'+str('J'+r,fmtSigned(t.net).replace('−','-'))+str('K'+r,fmtSigned(d.bal).replace('−','-'))+'</row>';
+  });
+  const widths=[28,13,13,13,13,13,13,18,15,16,14];
+  const sheet='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>'+widths.map((w,i)=>'<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>').join('')+'</cols><sheetData>'+xml+'</sheetData></worksheet>';
+  await saveFile('meu-ponto_equipe_'+from+'_a_'+to+'.xlsx',buildXlsx({from,to,rows:[],t:summarize([],0)},'',sheet));
+}
+
 /* ---------- Lembretes ---------- */
 const seenRem=new Set();
 let activeRem=null;
@@ -1493,7 +1604,7 @@ function checkReminders(){
   activeRem=null;
   for(const k of KEYS){
     if(!day.sched[k]||p[k])continue;
-    if((k==='ls'||k==='lr')&&day.rec.noLunch)continue;
+    if((k==='ls'||k==='lr')&&(day.rec.noLunch||c.fixedLunch!==false))continue;
     const due=hm2m(day.sched[k])+c.remind.after;
     if(x.now.min>=due&&x.now.min<due+180){
       activeRem={k,t:day.sched[k]};
@@ -1543,6 +1654,12 @@ document.addEventListener('click',e=>{
   else if(a==='save-remind')saveRemind();
   else if(a==='backup')doBackup();
   else if(a==='login-mode')setLoginMode(b.dataset.m);
+  else if(a==='team-reload')loadTeam();
+  else if(a==='team-k'){Team.k=b.dataset.k;render()}
+  else if(a==='team-open'){Team.sel=b.dataset.id;render();scrollTo(0,0)}
+  else if(a==='team-back'){Team.sel=null;render()}
+  else if(a==='team-pdf'||a==='team-xlsx'){const p=Team.people.find(x=>x.id===Team.sel),d=teamData(p);const r={from:d.from,to:d.to,rows:d.rows,t:d.t,slug:p.id.split('@')[0]};if(a==='team-pdf')exportPDF(r,p.nome);else exportXlsx(r,p.nome)}
+  else if(a==='team-export')exportTeam();
   else if(a==='logout')logout();
   else if(a==='notif'){try{Notification.requestPermission().then(()=>render())}catch(e){toast('Este ambiente não permite notificações.')}}
 });
@@ -1562,6 +1679,7 @@ document.addEventListener('change',e=>{
   const t=e.target;
   if(t.dataset.rep){S.rep[t.dataset.rep]=t.value;render()}
   else if(t.dataset.bank){S.bank[t.dataset.bank]=t.value;render()}
+  else if(t.dataset.team){Team[t.dataset.team]=t.value;render()}
   else if(t.id==='ev-type'){S.evType=t.value;S.evFrom=$('#ev-from').value;render()}
   else if(t.id==='hist-ym'){S.histYm=t.value;render()}
   else if(t.id==='restoreFile'&&t.files[0])restore(t.files[0]);
