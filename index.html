@@ -371,7 +371,7 @@ function computeDay(date,ctx){
   const active=ctx.active||now.date;
   const missing=[];
   const abs=absOf(rec);
-  const fixed=cfg.fixedLunch!==false&&!!sched&&!!sched.ls&&!!sched.lr&&!zero&&!rec.noLunch&&!p.ls&&!p.lr;
+  const fixed=cfg.fixedLunch===true&&!!sched&&!!sched.ls&&!!sched.lr&&!zero&&!rec.noLunch&&!p.ls&&!p.lr;
   const lunchCut=(a,b)=>{const s=schedAbs(sched);return Math.max(0,Math.min(b,s.lr)-Math.max(a,s.ls))};
   const res={fixedLunch:fixed,date,sched,ev,expected,worked:0,delta:0,extra:0,neg:0,comp:0,late:0,early:0,status:'none',label:'',missing,counted:false,inProgress:false,abs,warn:'',any,rec};
   const nextDay={};
@@ -796,7 +796,7 @@ function nextKey(date,c){
   const rec=getDay(date)||{},p=punchesOf(rec);
   if(p.x)return null;
   const sched=c.sched,zero=c.ev&&ZERO_EXPECTED.includes(c.ev.type);
-  const useLunch=sched&&sched.ls&&!zero&&!rec.noLunch&&cfg().fixedLunch===false;
+  const useLunch=sched&&sched.ls&&!zero&&!rec.noLunch&&cfg().fixedLunch!==true;
   const seq=(useLunch||p.ls)?KEYS:['e','x'];
   return seq.find(k=>!p[k]);
 }
@@ -839,7 +839,7 @@ function vHome(){
     return '<div class="c'+(r.date===n.date?' today':'')+'" data-tip="'+esc(tip)+'" tabindex="0">'+(r.expected?'<span class="g" style="bottom:'+g+'%"></span>':'')+'<div class="b" style="height:'+h+'%"></div></div>';
   }).join('');
   const labs=wk.map(r=>r.date===n.date?'<b>'+WDS[dow(r.date)]+'</b>':'<span>'+WDS[dow(r.date)]+'</span>').join('');
-  const lunchFixed=cfg().fixedLunch!==false&&c.sched&&c.sched.ls&&!p.ls&&!p.lr;
+  const lunchFixed=cfg().fixedLunch===true&&c.sched&&c.sched.ls&&!p.ls&&!p.lr;
   const showKeys=lunchFixed?['e','x']:KEYS;
   const stamps=showKeys.map(key=>{
     const v=p[key],skip=c.sched&&!c.sched[key]&&!v;
@@ -1391,7 +1391,7 @@ function vSet(){
       <div class="schedrow schedhead"><span>Dia</span><span>Entrada</span><span>Saída almoço</span><span>Retorno</span><span>Saída</span><span>Total</span></div>
       ${rows}
     </div>
-    <label class="ck"><input type="checkbox" id="w-fixed" ${c.fixedLunch!==false?'checked':''}>Almoço fixo: descontar o intervalo automaticamente, sem registrar saída e retorno do almoço</label>
+    <label class="ck"><input type="checkbox" id="w-fixed" ${c.fixedLunch===true?'checked':''}>Almoço fixo: descontar o intervalo automaticamente, sem registrar saída e retorno do almoço</label>
     <div class="err" id="wErr" role="alert"></div>
     <div class="row" style="align-items:flex-end"><label class="f" style="flex:0 1 200px">Válida a partir de<input type="date" id="w-from" value="${esc(n)}"></label><button class="btn primary" data-act="save-week">Salvar jornada</button></div>
     <ul class="plist small">${vers}</ul>
@@ -1604,14 +1604,17 @@ function checkReminders(){
   activeRem=null;
   for(const k of KEYS){
     if(!day.sched[k]||p[k])continue;
-    if((k==='ls'||k==='lr')&&(day.rec.noLunch||c.fixedLunch!==false))continue;
-    const due=hm2m(day.sched[k])+c.remind.after;
+    if((k==='ls'||k==='lr')&&(day.rec.noLunch||c.fixedLunch===true))continue;
+    let at=hm2m(day.sched[k]);
+    /* Retorno: conta a partir do horário real em que o almoço começou. */
+    if(k==='lr'&&p.ls&&day.sched.ls)at=hm2m(p.ls.t)+(hm2m(day.sched.lr)-hm2m(day.sched.ls));
+    const due=at+c.remind.after,atTxt=String(Math.floor(at/60)%24).padStart(2,'0')+':'+String(at%60).padStart(2,'0');
     if(x.now.min>=due&&x.now.min<due+180){
-      activeRem={k,t:day.sched[k]};
+      activeRem={k,t:atTxt};
       const id=d+k;
       if(!seenRem.has(id)){
         seenRem.add(id);
-        try{if(typeof Notification!=='undefined'&&Notification.permission==='granted')new Notification('Meu Ponto',{body:'Registre: '+LABEL[k]+' (previsto '+day.sched[k]+')'})}catch(e){}
+        try{if(typeof Notification!=='undefined'&&Notification.permission==='granted')new Notification('Meu Ponto',{body:'Registre: '+LABEL[k]+' (previsto '+atTxt+')'})}catch(e){}
       }
     }
     break;
